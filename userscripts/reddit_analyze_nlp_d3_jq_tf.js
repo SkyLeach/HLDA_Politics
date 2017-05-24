@@ -11,6 +11,14 @@
 // @require https://d3js.org/d3.v4.min.js
 // ==/UserScript==
 /*jshint esversion: 6 */
+
+// globals for functional reuse
+var data = {
+  comments : {},
+  topics   : {},
+  nouns    : {},
+};
+
 $(document).ready(function() {
   //create the dialogue
   $("body").append ( `
@@ -20,29 +28,43 @@ $(document).ready(function() {
           <input type="text" id="target_pronoun" value="">
 
           <p id="display_target_pronoun">&nbsp;</p>
-          <button id="countNounsBtn" type="button">Count the Nouns</button>
+          <button id="gmBuildDataBtn" type="button">Build Data</button>
+          <button id="gmBuildTopicBarChartBtn" type="button">Build Topic Barchart</button>
           <button id="gmCloseDlgBtn" type="button">Close popup</button>
       </form>
+      <div id="coreViz" class="cv_barchart"></div>
+      <pre id="gmCSV" class="csv_selector"></pre>
       </div>
   ` );
 
   //--- Use jQuery to activate the dialog buttons.
-  $("#countNounsBtn").click(function () {
-    //$('#gmPopupContainer').css({'width': '800px', 'height': '600px'});
-    $('#gmPopupContainer').toggleClass('gmExpanded');
-    comment_hashdict = get_nested_comment_dict();
-    console.log(comment_hashdict);
-    noundict = count_nlp_nouns(comment_hashdict);
-    console.log(noundict);
+  $("#gmBuildTopicBarChartBtn").click(function () {
+    build_data();
+    $('#gmPopupContainer').toggleClass('gmExpanded', false);
+    d3.select('#coreViz')
+      .selectAll('div')
+        .data(d3.entries(data.topics)
+          .sort(getSortCallback(d3.descending))
+        )
+      .enter().append("div")
+        .classed('cv_bars', true)
+        .style("width", function(d) { return d.value.count * 10 + 'px'; })
+        .text(function(d) { return d.key; });
   });
-  /*$("#gmAddNumsBtn").click( function () {
-      var target_pronoun   = $("#target_pronoun").val ();
-      $("#display_target_pronoun").text ("Current Target Pronoun is: " + target_pronoun);
-  } );*/
+  $("#gmBuildDataBtn").click(function () {
+    build_data(true);
+  });
+  $("#copyCSVText").click( function () {
+      let selector = 'gmCSV';
+      $('#'+selector).show();
+      $('#'+selector).text(topicsToCSV(data.topics));
+      select_copy_clear(document.getElementById(selector));
+      $('#'+selector).hide();
+  } );
   $("#gmCloseDlgBtn").click ( function () {
     $("#gmPopupContainer").hide ();
     //$('#gmPopupContainer').css({'width': '', 'height': ''});
-    $('#gmPopupContainer').toggleClass('gmExpanded');
+    $('#gmPopupContainer').toggleClass('gmExpanded', false);
   } );
   //add analyze button
   $('ul.tabmenu').append(`
@@ -60,6 +82,8 @@ $(document).ready(function() {
       position                   : fixed;
       top                        : 30%;
       left                       : 20%;
+      max-width                  : 75%;
+      max-height                 : 80%;
       padding                    : 2em;
       background                 : powderblue;
       border                     : 3px double black;
@@ -69,9 +93,9 @@ $(document).ready(function() {
       overflow                   : auto; /* Enable scroll if needed */
       box-shadow                 : 0 4px 8px 0 rgba(0,0,0,0.2),0 6px 20px 0 rgba(0,0,0,0.19);
       -webkit-animation-name     : animatetop;
-      -webkit-animation-duration : 0.4s;
+      -webkit-animation-duration : 0.3s;
       animation-name             : animatetop;
-      animation-duration         : 0.4s;
+      animation-duration         : 0.3s;
       -webkit-transition         : width 300ms ease-in-out, height 300ms ease-in-out;
       -moz-transition            : width 300ms ease-in-out, height 300ms ease-in-out;
       -o-transition              : width 300ms ease-in-out, height 300ms ease-in-out;
@@ -80,19 +104,18 @@ $(document).ready(function() {
 
     /* Add 'expanded' size class */
     .gmExpanded {
-      width    : 800px;
-      height   : 300px;
-      overflow : scroll;
+      width    : 75%;
+      height   : 80%;
     }
 
     /* Add Animation */
     @-webkit-keyframes animatetop {
-      from { top: -300px ; opacity: 0}
+      from { top: -100px ; opacity: 0}
       to   { top: 30%    ; opacity: 1}
     }
 
     @keyframes animatetop {
-      from { top: -300px ; opacity: 0}
+      from { top: -100px ; opacity: 0}
       to   { top: 30%    ; opacity: 1}
     }
 
@@ -101,8 +124,102 @@ $(document).ready(function() {
       margin : 1em 1em 0;
       border : 1px outset buttonface;
     }
+
+    .csv_selector {
+        display : none;
+        width   : 1px;
+        height  : 1px;
+    }
+
+    .cv_bars {
+        font             : 10px sans-serif;
+        background-color : steelblue;
+        text-align       : right;
+        padding          : 3px;
+        margin           : 1px;
+        color            : white;
+    }
   `);
 });
+
+function selectMe(elem) {
+  var text = null;
+  if (typeof elem === 'object') {
+    text = elem;
+  } else {
+    text = doc.getElementById(elem);
+  }
+  var doc = document, range, selection;
+  if (doc.body.createTextRange) {
+    range = document.body.createTextRange();
+    range.moveToElementText(text);
+    range.select();
+  } else if (window.getSelection) {
+    selection = window.getSelection();
+    range = document.createRange();
+    range.selectNodeContents(text);
+    selection.removeAllRanges();
+    selection.addRange(range);
+  }
+}
+
+function select_copy_clear(elem) {
+  //TODO: add clear
+  selectMe(elem);
+  document.execCommand("copy");
+}
+
+function getSortCallback(sortcall, prop=null) {
+  return function(a, b) {
+    if(prop) {
+      return sortcall(a.value[prop], b.value[prop]);
+    } else {
+      return sortcall(a.key, b.key);
+    }
+  };
+}
+
+function build_data(rebuild=false){
+  if(!Object.keys(data.comments).length || rebuild){
+    data.comments = get_nested_comment_dict();
+    data.topics   = count_nlp_topics(data.comments);
+    data.nouns    = count_nlp_nouns(data.comments);
+    /*
+    data.topic_keys = {
+      pk    : Object.keys(data.topics),
+      count : function(key=null){
+        let result = [];
+        if(!key) {
+          key = Object.values(data.topics);
+        }
+        for(let d in key){
+          if(depth in d.depth_count) {
+            result.push(d.depth_count[depth]);
+          }else{
+            result.push(0);
+          }
+        }
+        return result;
+      },
+      depth_count : function(depth, key=null) {
+        let result = [];
+        if(!key) {
+          key = Object.values(data.topics);
+        }
+        for(let d in key){
+          if(depth in d.depth_count) {
+            result.push(d.depth_count[depth]);
+          }else{
+            result.push(0);
+          }
+        }
+        return result;
+      }
+    };
+    */
+  }
+}
+
 
 function get_page_comments(depth=0) {
   return $('.entry').find('.usertext-body').find('.md').find('p');
@@ -137,20 +254,71 @@ function get_thingParagraphs(thing) {
                children('div.md').find('p');
 }
 
+function topicsToCSV(obj) {
+  var csv = '';
+  try {
+    $.each(obj, function(k, v) {
+      if(csv === '') {
+        csv += '"Topic","Count",';
+        for (let i=1;i<20;i++) {
+          csv += ',"DC ' + i + '"';
+        }
+        csv += '"Sources"';
+        csv += '\n';
+      }
+      csv +=  '"' + k + '"' + ',' +
+              v.count + ',';
+      for (let i=1; i<20; i++) {
+        csv+= (i in v.depth_count) ? v.depth_count[i] + ',' : '0' + ',';
+      }
+      csv += '"' + v.sources.join() + '"';
+      csv += '\n';
+    });
+  } catch (err) {
+    console.log(err.stack);
+  }
+  return csv;
+}
+
+function clean_text(elem) {
+  //attempts to clean out child elements:
+  clone = $(elem).clone();
+  // <em></em>
+  clone.children('em').replaceWith(function() { return $(this).text(); });
+  // <strong></strong>
+  clone.children('strong').replaceWith(function() { return $(this).text(); });
+  // <a>...?</a> -> to inner text or LINK (for now)
+  // TODO: better link handling
+  clone.children('a').replaceWith(function() {
+    text = $(this).text();
+    if (!text || text == $(this).attr('href')) {
+      text = 'LINK';
+    }
+    return text;
+  });
+  return clone.text();
+  // TODO: strikethrough handling
+
+}
+
 function paragraphsToNLP(paragraphs) {
   //TODO: cleanup strikethrough
-  //TODO: cleanup anchors
-  //TODO: cleanup emote
-  //TODO: cleanup strong
   nlstring = '';
   paragraphs.each(function (ndex, pelem) {
     if (nlstring !== ''){
-      nlstring += '\n\n' + $(pelem).text();
+      nlstring += '\n\n' + clean_text(pelem);
     }else{
-      nlstring = $(pelem).text();
+      nlstring = clean_text(pelem);
     }
   });
-  return nlp(nlstring);
+  try {
+    return nlp(nlstring);
+  } catch (err) {
+    console.log('Error parsing string:');
+    console.log(nlstring);
+    console.log(err.stack);
+    return null;
+  }
 }
 
 function getCommentHash(thing) {
@@ -213,10 +381,44 @@ function* nlp_comment_iter(){
   }
 }
 
+function count_nlp_topics(comment_things) {
+  result = {};
+  $.each(comment_things, function (k, v) {
+    try {
+      nlparsed = paragraphsToNLP(get_thingParagraphs($(v.thing)));
+      if (!nlparsed){return;}
+      topics = nlparsed.topics().out('json');
+      if(topics.length > 0) {
+        for (var topic in topics){
+          topic = topics[topic][0].normal;
+          if(topic in result){
+            result[topic].count++;
+            result[topic].sources.push(k);
+            if (v.depth in result[topic].depth_count) {
+              result[topic].depth_count[v.depth]++;
+            }else{
+              result[topic].depth_count[v.depth] = 1;
+            }
+          }else{
+            result[topic] = {};
+            result[topic].count = 1;
+            result[topic].depth_count = {};
+            result[topic].depth_count[v.depth] = 1;
+            result[topic].sources=[k];
+          }
+        }
+      }
+    } catch (err) {
+      console.log(err.stack);
+    }
+  });
+  return result;
+}
 function count_nlp_nouns(comment_things) {
   result = {};
   $.each(comment_things, function (k, v) {
     nlparsed = paragraphsToNLP(get_thingParagraphs($(v.thing)));
+    if(!nlparsed) return;
     people = nlparsed.people().out('json');
     if (people.length > 0){
       for (var person in people){
