@@ -14,11 +14,12 @@
 
 // globals for functional reuse
 var data = {
-  comments : {},
-  topics   : {},
-  nouns    : {},
+  comments  : {},
+  topics    : {},
+  nouns     : {},
+  max_depth : 0
 };
-
+var worker = null;
 $(document).ready(function() {
   //create the dialogue
   $("body").append ( `
@@ -32,28 +33,120 @@ $(document).ready(function() {
           <button id="gmBuildTopicBarChartBtn" type="button">Build Topic Barchart</button>
           <button id="gmCloseDlgBtn" type="button">Close popup</button>
       </form>
-      <div id="coreViz" class="cv_barchart"></div>
+      <svg id="coreViz" class="cv_barchart"></svg>
       <pre id="gmCSV" class="csv_selector"></pre>
       </div>
+      <script id="worker1" type="javascript/worker">
+        // This script won't be parsed by JS engines because its type is javascript/worker.
+        self.onmessage = function(e) {
+          self.postMessage('msg from worker');
+        };
+        // Rest of your worker code goes here.
+      </script>
   ` );
+  var blob = new Blob([
+    document.querySelector('#worker1').textContent
+  ], { type: "text/javascript" });
 
-  //--- Use jQuery to activate the dialog buttons.
+  // Note: window.webkitURL.createObjectURL() in Chrome 10+.
+  worker = new Worker(window.URL.createObjectURL(blob));
+  worker.onmessage = function(e) {
+    console.log("Received: " + e.data);
+  };
+  worker.postMessage("hello"); // Start the worker.
+
   $("#gmBuildTopicBarChartBtn").click(function () {
     build_data();
-    $('#gmPopupContainer').toggleClass('gmExpanded', false);
-    d3.select('#coreViz')
-      .selectAll('div')
-        .data(d3.entries(data.topics)
-          .sort(getSortCallback(d3.descending))
-        )
-      .enter().append("div")
-        .classed('cv_bars', true)
-        .style("width", function(d) { return d.value.count * 10 + 'px'; })
-        .text(function(d) { return d.key; });
+    container = '#gmPopupContainer';
+    //$(container).toggleClass('gmExpanded', false);
+    $(container).height($(window).height()*0.8);
+    var entrydata = d3.entries(data.topics).sort(getSortCallback(d3.ascending, 'count'));
+    /*
+    var depthmatrix = function() {
+      result = [];
+      try {
+        for (let i in entrydata) {
+          var key = entrydata[i].key;
+            obj = entrydata[i].value;
+          for (let di=1;di<=data.max_depth;di++) {
+            result.push([di, (di in obj.depth_count) ? obj.depth_count[di] : 0, obj]);
+          }
+        }
+        return result;
+      } catch (err) {
+        console.log(err.stack);
+      }
+    }();
+    console.log(depthmatrix);
+    */
+    //TODO: calculate real pointsize
+    //var pointsize = parseInt($(container).css('font-size')) * 72/96;
+    var chartwidth = $(container).width() - 20; //20 is estimated 2em at 10px fontsize
+    var barHeight = 20;
+    var scale = d3.scaleLinear()
+      .domain([0, entrydata[entrydata.length-1].value.count])
+      .range([0, chartwidth]);
+    var color_scale = d3.scaleLinear()
+      .domain([entrydata[entrydata.length-1].value.count,0])
+      .range([255, 100]);
+    var chart = d3.select('#coreViz')
+      .attr("width", chartwidth)
+      .attr("height", barHeight * entrydata.length);
+    var bar = chart.selectAll('g')
+      .data(entrydata)
+      .enter().append("g")
+        .attr("transform", function(d, i) { return "translate(0," + i * barHeight + ")"; });
+    function func_scalewidth(depth, obj) {
+      return function(d, i) {return scale(obj.depth_count[depth]); };
+    }
+    function func_translate(offset) {
+      return function(d, i) { return "translate(" + offset + ",0)"; };
+    }
+    function get_offset(maxdepth,objkey) {
+      let offset = 0;
+      for (let depth in data.topics[objkey].depth_count) {
+        if(depth >= maxdepth) return offset;
+        offset+=scale(data.topics[objkey].depth_count[depth]);
+      }
+      return offset;
+    }
+    var rect = bar.selectAll('rect')
+      .data(function(d){
+        let result = d3.entries(d.value.depth_count);
+        for(let i in result){ result[i].value = [result[i].value, d.key]; }
+        return result;})
+      .enter().append('rect')
+        .attr("transform", function(d, i) {
+          return "translate(" + get_offset(d.key,d.value[1]) + ",0)";
+        })
+        .attr("width", function(d, i) { return scale(d.value[0]); })
+        .attr("height", barHeight - 1)
+        .attr("style", function(d, i) { return "fill:rgb(0,0," + color_scale(d.key) +")"; });
+    /*
+    bar.each(function(d,i) {
+      obj = d.value;
+      let offset = 0;
+      for (let depth in obj.depth_count) {
+        bar.append('rect')
+          .attr("transform", func_translate(offset))
+          .attr("width", func_scalewidth(depth, obj))
+          .attr("height", barHeight - 1)
+          .attr("style", "fill:rgb(0,0," + color_scale(offset) +")");
+        offset+=scale(obj.depth_count[depth]);
+      }
+    });
+    */
+    bar.append("text")
+      .attr("x", function(d) { return scale(d.value.count) - 3; })
+      .attr("y", barHeight / 2)
+      .attr("dy", ".35em")
+      .text(function(d) { return d.key + ':' + d.value.count; });
   });
+
   $("#gmBuildDataBtn").click(function () {
     build_data(true);
   });
+
   $("#copyCSVText").click( function () {
       let selector = 'gmCSV';
       $('#'+selector).show();
@@ -61,11 +154,13 @@ $(document).ready(function() {
       select_copy_clear(document.getElementById(selector));
       $('#'+selector).hide();
   } );
+
   $("#gmCloseDlgBtn").click ( function () {
     $("#gmPopupContainer").hide ();
     //$('#gmPopupContainer').css({'width': '', 'height': ''});
     $('#gmPopupContainer').toggleClass('gmExpanded', false);
   } );
+
   //add analyze button
   $('ul.tabmenu').append(`
       <li>
@@ -80,8 +175,8 @@ $(document).ready(function() {
   GM_addStyle ( `
     #gmPopupContainer {
       position                   : fixed;
-      top                        : 30%;
-      left                       : 20%;
+      top                        : 10%;
+      left                       : 10%;
       max-width                  : 75%;
       max-height                 : 80%;
       padding                    : 2em;
@@ -111,12 +206,12 @@ $(document).ready(function() {
     /* Add Animation */
     @-webkit-keyframes animatetop {
       from { top: -100px ; opacity: 0}
-      to   { top: 30%    ; opacity: 1}
+      to   { top: 10%    ; opacity: 1}
     }
 
     @keyframes animatetop {
       from { top: -100px ; opacity: 0}
-      to   { top: 30%    ; opacity: 1}
+      to   { top: 10%    ; opacity: 1}
     }
 
     #gmPopupContainer button{
@@ -131,13 +226,14 @@ $(document).ready(function() {
         height  : 1px;
     }
 
-    .cv_bars {
-        font             : 10px sans-serif;
-        background-color : steelblue;
-        text-align       : right;
-        padding          : 3px;
-        margin           : 1px;
-        color            : white;
+    .cv_barchart rect {
+      fill: steelblue;
+    }
+
+    .cv_barchart text {
+      fill: white;
+      font: 10px sans-serif;
+      text-anchor: end;
     }
   `);
 });
@@ -390,6 +486,7 @@ function count_nlp_topics(comment_things) {
       topics = nlparsed.topics().out('json');
       if(topics.length > 0) {
         for (var topic in topics){
+          if(data.max_depth < v.depth) data.max_depth = v.depth;
           topic = topics[topic][0].normal;
           if(topic in result){
             result[topic].count++;
